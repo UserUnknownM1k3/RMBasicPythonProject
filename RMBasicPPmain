@@ -1,0 +1,361 @@
+import customtkinter as ctk
+from tkinter import filedialog, messagebox
+import tkinter as tk
+import cv2
+import numpy as np
+from PIL import Image, ImageTk, ImageDraw, ImageFont
+import pandas as pd
+from datetime import datetime
+import os
+import shutil
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+class ShooterAnalyzerApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Analizator tarczy strzeleckiej - Sesje")
+        self.geometry("1520x1100")
+
+        self.current_image_path = None
+        self.photo_image = None
+        self.annotated_photo = None
+        self.detections = []
+        self.last_total_score = 0
+
+        self.current_session_folder = None   # aktualny folder sesji
+
+        self.create_menu_bar()
+        self.scrollable_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.scrollable_frame.pack(fill="both", expand=True, padx=15, pady=10)
+        self.create_main_ui()
+
+    def create_menu_bar(self):
+        menubar = ctk.CTkFrame(self, height=40, fg_color="#2b2b2b")
+        menubar.pack(fill="x", side="top", pady=(0, 8))
+
+        file_menu = ctk.CTkOptionMenu(menubar, 
+                                      values=["Otwórz zdjęcie", "Nowy folder sesji", "Zapisz wynik do Excel", "Wyjście"],
+                                      command=self.menu_file_handler, width=220)
+        file_menu.set("Plik")
+        file_menu.pack(side="left", padx=12, pady=6)
+
+        analyze_menu = ctk.CTkOptionMenu(menubar, 
+                                         values=["Analizuj tarczę", "Wyczyść wszystko"],
+                                         command=self.menu_analyze_handler, width=180)
+        analyze_menu.set("Analiza")
+        analyze_menu.pack(side="left", padx=8, pady=6)
+
+        settings_menu = ctk.CTkOptionMenu(menubar, 
+                                          values=["Tryb ciemny", "Tryb jasny", "O aplikacji"],
+                                          command=self.menu_settings_handler, width=180)
+        settings_menu.set("Ustawienia")
+        settings_menu.pack(side="left", padx=8, pady=6)
+
+    def create_main_ui(self):
+        title = ctk.CTkLabel(self.scrollable_frame, text="Analizator tarczy strzeleckiej", 
+                             font=ctk.CTkFont(size=28, weight="bold"))
+        title.pack(pady=15)
+
+        # Nazwa sesji / folderu
+        self.session_label = ctk.CTkLabel(self.scrollable_frame, 
+                                          text="Brak aktywnej sesji", 
+                                          font=ctk.CTkFont(size=15, weight="bold"), 
+                                          text_color="orange")
+        self.session_label.pack(pady=(0, 5))
+
+        # Nazwa pliku
+        self.filename_label = ctk.CTkLabel(self.scrollable_frame, 
+                                           text="Brak wczytanego zdjęcia", 
+                                           font=ctk.CTkFont(size=14), 
+                                           text_color="lightgray")
+        self.filename_label.pack(pady=(0, 5))
+
+        # Zdjęcie
+        self.image_label = ctk.CTkLabel(self.scrollable_frame, text="Wczytaj zdjęcie tarczy", 
+                                        width=840, height=840, fg_color="#1f1f1f", corner_radius=15)
+        self.image_label.pack(pady=5)
+
+        # Panel przycisków
+        control_frame = ctk.CTkFrame(self.scrollable_frame)
+        control_frame.pack(pady=20, padx=40, fill="x")
+
+        self.upload_btn = ctk.CTkButton(control_frame, text="Wczytaj zdjęcie", 
+                                        command=self.upload_image, height=50, width=210)
+        self.upload_btn.grid(row=0, column=0, padx=15)
+
+        self.analyze_btn = ctk.CTkButton(control_frame, text="Analizuj tarczę", 
+                                         command=self.analyze_target, height=50, width=210,
+                                         fg_color="#FF9800")
+        self.analyze_btn.grid(row=0, column=1, padx=15)
+
+        self.save_to_session_btn = ctk.CTkButton(control_frame, text="Dodaj do sesji", 
+                                                 command=self.save_to_session, height=50, width=210,
+                                                 fg_color="#4CAF50")
+        self.save_to_session_btn.grid(row=0, column=2, padx=15)
+
+        self.clear_btn = ctk.CTkButton(control_frame, text="Wyczyść wszystko", 
+                                       command=self.clear_all, height=50, width=210)
+        self.clear_btn.grid(row=0, column=3, padx=15)
+
+        # Suwak
+        slider_frame = ctk.CTkFrame(control_frame)
+        slider_frame.grid(row=1, column=0, columnspan=4, pady=25, sticky="ew")
+
+        self.sensitivity_slider = ctk.CTkSlider(slider_frame, from_=15, to=180, number_of_steps=165,
+                                                command=self.update_sensitivity_label)
+        self.sensitivity_slider.set(50)
+        self.sensitivity_slider.pack(side="left", fill="x", expand=True, padx=40)
+
+        self.sens_label = ctk.CTkLabel(slider_frame, text="Czułość detekcji: 50 px")
+        self.sens_label.pack(side="right", padx=40)
+
+        # Wyniki
+        self.result_textbox = ctk.CTkTextbox(self.scrollable_frame, height=270, 
+                                             font=ctk.CTkFont(size=17))
+        self.result_textbox.pack(pady=30, padx=50, fill="x")
+        self.result_textbox.insert("0.0", "Wynik analizy pojawi się tutaj...\n")
+
+    def update_sensitivity_label(self, value):
+        self.sens_label.configure(text=f"Czułość detekcji: {int(value)} px")
+
+    def menu_file_handler(self, choice):
+        if choice == "Otwórz zdjęcie":
+            self.upload_image()
+        elif choice == "Nowy folder sesji":
+            self.create_new_session_folder()
+        elif choice == "Zapisz wynik do Excel":
+            self.save_to_excel()
+        elif choice == "Wyjście":
+            self.quit()
+
+    def menu_analyze_handler(self, choice):
+        if choice == "Analizuj tarczę":
+            self.analyze_target()
+        elif choice == "Wyczyść wszystko":
+            self.clear_all()
+
+    def menu_settings_handler(self, choice):
+        if choice == "Tryb ciemny": ctk.set_appearance_mode("dark")
+        elif choice == "Tryb jasny": ctk.set_appearance_mode("light")
+        elif choice == "O aplikacji":
+            messagebox.showinfo("O programie", "v4.1 – Zarządzanie sesjami")
+
+    def create_new_session_folder(self):
+        folder_name = ctk.CTkInputDialog(title="Nowy folder sesji", 
+                                         text="Podaj nazwę folderu sesji:").get_input()
+        if not folder_name:
+            return
+
+        base_dir = "Sesje_Strzeleckie"
+        if not os.path.exists(base_dir):
+            os.makedirs(base_dir)
+
+        session_path = os.path.join(base_dir, folder_name)
+        try:
+            os.makedirs(session_path, exist_ok=True)
+            self.current_session_folder = session_path
+            self.session_label.configure(text=f"Aktywna sesja: {folder_name}", text_color="#4ade80")
+            messagebox.showinfo("Sukces", f"Utworzono folder sesji:\n{session_path}")
+        except Exception as e:
+            messagebox.showerror("Błąd", f"Nie udało się utworzyć folderu:\n{e}")
+
+    def upload_image(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Obrazy", "*.jpg *.jpeg *.png *.bmp *.webp")])
+        if not file_path: return
+
+        self.current_image_path = file_path
+        try:
+            pil_img = Image.open(file_path)
+            pil_img.thumbnail((840, 840), Image.LANCZOS)
+            self.photo_image = ImageTk.PhotoImage(pil_img)
+            self.image_label.configure(image=self.photo_image, text="")
+
+            filename = os.path.basename(file_path)
+            self.filename_label.configure(text=f"Plik: {filename}", text_color="lightgreen")
+
+            self.result_textbox.delete("0.0", "end")
+            self.result_textbox.insert("0.0", f"Zdjęcie wczytane: {filename}\nKliknij 'Analizuj tarczę'\n")
+
+            self.detections = []
+            self.annotated_photo = None
+        except Exception as e:
+            messagebox.showerror("Błąd", f"Nie udało się wczytać zdjęcia:\n{e}")
+
+    def save_to_session(self):
+        if not self.current_image_path:
+            messagebox.showwarning("Brak zdjęcia", "Najpierw wczytaj zdjęcie!")
+            return
+        if not self.current_session_folder:
+            messagebox.showwarning("Brak sesji", "Najpierw utwórz folder sesji (Plik → Nowy folder sesji)")
+            return
+
+        # Okno metadanych
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Dodaj zdjęcie do sesji")
+        dialog.geometry("400x300")
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="Metadane zdjęcia", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
+
+        date_entry = ctk.CTkEntry(dialog, placeholder_text="Data (RRRR-MM-DD)", width=300)
+        date_entry.insert(0, datetime.now().strftime("%Y-%m-%d"))
+        date_entry.pack(pady=5)
+
+        distance_entry = ctk.CTkEntry(dialog, placeholder_text="Dystans (np. 25m, 50m)", width=300)
+        distance_entry.pack(pady=5)
+
+        weapon_entry = ctk.CTkEntry(dialog, placeholder_text="Rodzaj broni (np. CZ Shadow, Glock)", width=300)
+        weapon_entry.pack(pady=5)
+
+        def save_image_with_metadata():
+            date = date_entry.get().strip()
+            distance = distance_entry.get().strip()
+            weapon = weapon_entry.get().strip()
+
+            if not date or not distance or not weapon:
+                messagebox.showwarning("Brak danych", "Wypełnij wszystkie pola!")
+                return
+
+            try:
+                filename = os.path.basename(self.current_image_path)
+                new_filename = f"{date}_{distance}_{weapon}_{filename}"
+                destination = os.path.join(self.current_session_folder, new_filename)
+
+                shutil.copy2(self.current_image_path, destination)
+
+                messagebox.showinfo("Sukces", f"Zdjęcie dodane do sesji:\n{new_filename}")
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror("Błąd", f"Nie udało się zapisać zdjęcia:\n{e}")
+
+        ctk.CTkButton(dialog, text="Zapisz zdjęcie do sesji", command=save_image_with_metadata, 
+                      fg_color="#4CAF50").pack(pady=20)
+
+    def analyze_target(self):
+        if not self.current_image_path:
+            self.result_textbox.delete("0.0", "end")
+            self.result_textbox.insert("0.0", "Najpierw wczytaj zdjęcie!\n")
+            return
+
+        self.result_textbox.delete("0.0", "end")
+        self.result_textbox.insert("0.0", "Trwa analiza...")
+
+        try:
+            img = cv2.imread(self.current_image_path)
+            h, w = img.shape[:2]
+            center = (w // 2, h // 2)
+
+            min_area = int(self.sensitivity_slider.get())
+
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            blur = cv2.GaussianBlur(gray, (9, 9), 0)
+
+            thresh1 = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                            cv2.THRESH_BINARY_INV, 19, 8)
+            _, thresh2 = cv2.threshold(blur, 72, 255, cv2.THRESH_BINARY_INV)
+            thresh = cv2.bitwise_or(thresh1, thresh2)
+
+            mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.circle(mask, center, 405, 255, -1)
+            thresh = cv2.bitwise_and(thresh, thresh, mask=mask)
+
+            kernel = np.ones((6, 6), np.uint8)
+            opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+
+            contours, _ = cv2.findContours(opening, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            detections = []
+            total_score = 0
+            score_counts = {i: 0 for i in range(11)}
+
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area < min_area or area > 9000:
+                    continue
+
+                M = cv2.moments(cnt)
+                if M["m00"] == 0: continue
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+
+                distance = np.hypot(cx - center[0], cy - center[1])
+
+                if distance < 58:      score = 10
+                elif distance < 96:    score = 9
+                elif distance < 140:   score = 8
+                elif distance < 188:   score = 7
+                elif distance < 235:   score = 6
+                elif distance < 280:   score = 5
+                elif distance < 330:   score = 4
+                elif distance < 375:   score = 3
+                elif distance < 425:   score = 2
+                elif distance < 480:   score = 1
+                else:                  score = 0
+
+                detections.append((cx, cy, score))
+                total_score += score
+                score_counts[score] += 1
+
+            self.detections = detections
+            self.last_total_score = total_score
+
+            # Rysowanie
+            pil_img = Image.open(self.current_image_path).convert("RGB")
+            draw = ImageDraw.Draw(pil_img)
+            try:
+                font = ImageFont.truetype("arial.ttf", 28)
+            except:
+                font = ImageFont.load_default()
+
+            for cx, cy, score in detections:
+                draw.ellipse([cx-22, cy-22, cx+22, cy+22], outline="#ff0000", width=6)
+                draw.text((cx + 30, cy - 26), str(score), fill="#ffff00", font=font)
+
+            display_img = pil_img.copy()
+            display_img.thumbnail((840, 840), Image.LANCZOS)
+            self.annotated_photo = ImageTk.PhotoImage(display_img)
+
+            self.image_label.configure(image=self.annotated_photo)
+
+            result_text = f"Znaleziono trafień: {len(detections)}\n\n"
+            result_text += f"CAŁKOWITY WYNIK: {total_score} PUNKTÓW\n\nRozbicie:\n"
+            for s in range(10, -1, -1):
+                if score_counts.get(s, 0) > 0:
+                    result_text += f"Pole {s} → {score_counts[s]} trafień\n"
+
+            result_text += f"\nCzułość: {min_area} px"
+
+            self.result_textbox.delete("0.0", "end")
+            self.result_textbox.insert("0.0", result_text)
+            self.result_textbox.configure(text_color="#4ade80")
+
+        except Exception as e:
+            self.result_textbox.delete("0.0", "end")
+            self.result_textbox.insert("0.0", f"Błąd analizy:\n{str(e)}")
+            self.result_textbox.configure(text_color="red")
+
+    def clear_all(self):
+        self.image_label.configure(image="", text="Wczytaj zdjęcie tarczy")
+        self.filename_label.configure(text="Brak wczytanego zdjęcia", text_color="lightgray")
+        self.session_label.configure(text="Brak aktywnej sesji", text_color="orange")
+        self.result_textbox.delete("0.0", "end")
+        self.result_textbox.insert("0.0", "Wynik analizy pojawi się tutaj...\n")
+        
+        self.current_image_path = None
+        self.photo_image = None
+        self.annotated_photo = None
+        self.detections = []
+        self.last_total_score = 0
+
+    def save_to_excel(self):
+        if not self.detections:
+            messagebox.showwarning("Brak danych", "Najpierw przeanalizuj tarczę!")
+            return
+        messagebox.showinfo("Info", "Funkcja zapisu do Excela będzie dodana wkrótce.")
+
+
+if __name__ == "__main__":
+    app = ShooterAnalyzerApp()
+    app.mainloop()
