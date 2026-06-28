@@ -1,0 +1,277 @@
+import customtkinter as ctk
+from tkinter import filedialog, messagebox
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+import pandas as pd
+from datetime import datetime
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+class ShooterAnalyzerApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Analizator Tarczy Strzeleckiej v3.0")
+        self.geometry("1380x980")
+
+        self.current_image_path = None
+        self.annotated_photo = None
+        self.detections = []
+        self.last_total_score = 0
+        self.last_score_counts = {}
+
+        self.create_menu_bar()
+        self.scrollable_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.scrollable_frame.pack(fill="both", expand=True, padx=15, pady=10)
+        self.create_main_ui()
+
+    def create_menu_bar(self):
+        menubar = ctk.CTkFrame(self, height=40, fg_color="#2b2b2b")
+        menubar.pack(fill="x", side="top", pady=(0, 8))
+
+        file_menu = ctk.CTkOptionMenu(menubar, 
+                                      values=["Otwórz zdjęcie", "Zapisz wynik do Excel", "Wyjście"],
+                                      command=self.menu_file_handler, width=200)
+        file_menu.set("Plik")
+        file_menu.pack(side="left", padx=12, pady=6)
+
+        analyze_menu = ctk.CTkOptionMenu(menubar, 
+                                         values=["Analizuj tarczę", "Wyczyść wszystko"],
+                                         command=self.menu_analyze_handler, width=180)
+        analyze_menu.set("Analiza")
+        analyze_menu.pack(side="left", padx=8, pady=6)
+
+        settings_menu = ctk.CTkOptionMenu(menubar, 
+                                          values=["Tryb ciemny", "Tryb jasny", "O aplikacji"],
+                                          command=self.menu_settings_handler, width=180)
+        settings_menu.set("Ustawienia")
+        settings_menu.pack(side="left", padx=8, pady=6)
+
+    def create_main_ui(self):
+        title = ctk.CTkLabel(self.scrollable_frame, text="Analizator Tarczy Strzeleckiej v3.0", 
+                             font=ctk.CTkFont(size=28, weight="bold"))
+        title.pack(pady=20)
+
+        self.image_label = ctk.CTkLabel(self.scrollable_frame, text="Wczytaj zdjęcie tarczy", 
+                                        width=780, height=780, fg_color="#1f1f1f", corner_radius=15)
+        self.image_label.pack(pady=15)
+
+        control_frame = ctk.CTkFrame(self.scrollable_frame)
+        control_frame.pack(pady=20, padx=40, fill="x")
+
+        self.upload_btn = ctk.CTkButton(control_frame, text="Wczytaj zdjęcie", 
+                                        command=self.upload_image, height=50, width=210)
+        self.upload_btn.grid(row=0, column=0, padx=20)
+
+        self.analyze_btn = ctk.CTkButton(control_frame, text="Analizuj tarczę", 
+                                         command=self.analyze_target, height=50, width=210,
+                                         fg_color="#FF9800")
+        self.analyze_btn.grid(row=0, column=1, padx=20)
+
+        self.clear_btn = ctk.CTkButton(control_frame, text="Wyczyść wszystko", 
+                                       command=self.clear_all, height=50, width=210)
+        self.clear_btn.grid(row=0, column=2, padx=20)
+
+        # Suwak
+        slider_frame = ctk.CTkFrame(control_frame)
+        slider_frame.grid(row=1, column=0, columnspan=3, pady=25, sticky="ew")
+
+        self.sensitivity_slider = ctk.CTkSlider(slider_frame, from_=5, to=150, number_of_steps=145,
+                                                command=self.update_sensitivity_label)
+        self.sensitivity_slider.set(40)
+        self.sensitivity_slider.pack(side="left", fill="x", expand=True, padx=40)
+
+        self.sens_label = ctk.CTkLabel(slider_frame, text="Czułość detekcji: 40 px")
+        self.sens_label.pack(side="right", padx=40)
+
+        self.result_textbox = ctk.CTkTextbox(self.scrollable_frame, height=240, 
+                                             font=ctk.CTkFont(size=17))
+        self.result_textbox.pack(pady=30, padx=50, fill="x")
+        self.result_textbox.insert("0.0", "Wynik pojawi się tutaj...\n")
+
+    def update_sensitivity_label(self, value):
+        self.sens_label.configure(text=f"Czułość detekcji: {int(value)} px")
+
+    def menu_file_handler(self, choice):
+        if choice == "Otwórz zdjęcie": self.upload_image()
+        elif choice == "Zapisz wynik do Excel": self.save_to_excel()
+        elif choice == "Wyjście": self.quit()
+
+    def menu_analyze_handler(self, choice):
+        if choice == "Analizuj tarczę": self.analyze_target()
+        elif choice == "Wyczyść wszystko": self.clear_all()
+
+    def menu_settings_handler(self, choice):
+        if choice == "Tryb ciemny": ctk.set_appearance_mode("dark")
+        elif choice == "Tryb jasny": ctk.set_appearance_mode("light")
+        elif choice == "O aplikacji":
+            messagebox.showinfo("O programie", "v3.0 – Poprawiona detekcja trafień")
+
+    def upload_image(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Obrazy", "*.jpg *.jpeg *.png *.bmp *.webp")])
+        if not file_path: return
+        self.current_image_path = file_path
+        try:
+            pil_img = Image.open(file_path)
+            pil_img.thumbnail((780, 780), Image.LANCZOS)
+            photo = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=pil_img.size)
+            self.image_label.configure(image=photo, text="")
+            self.result_textbox.delete("0.0", "end")
+            self.result_textbox.insert("0.0", "Zdjęcie wczytane ✓\nKliknij 'Analizuj tarczę'\n")
+        except Exception as e:
+            messagebox.showerror("Błąd", f"Nie udało się wczytać zdjęcia:\n{e}")
+
+    def analyze_target(self):
+        if not self.current_image_path:
+            self.result_textbox.delete("0.0", "end")
+            self.result_textbox.insert("0.0", "Najpierw wczytaj zdjęcie!\n")
+            return
+
+        self.result_textbox.delete("0.0", "end")
+        self.result_textbox.insert("0.0", "Trwa analiza...")
+
+        try:
+            img = cv2.imread(self.current_image_path)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            h, w = gray.shape
+            center_x, center_y = w // 2, h // 2
+
+            min_area = int(self.sensitivity_slider.get())
+
+            blur = cv2.GaussianBlur(gray, (9, 9), 0)
+
+            # Zaawansowana detekcja – szczególnie dobra na czarnym środku
+            thresh1 = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                            cv2.THRESH_BINARY_INV, 25, 10)
+            _, thresh2 = cv2.threshold(blur, 55, 255, cv2.THRESH_BINARY_INV)
+            thresh = cv2.bitwise_or(thresh1, thresh2)
+
+            # Dodatkowe wzmocnienie kontrastu w środku
+            mask = np.zeros_like(gray)
+            cv2.circle(mask, (center_x, center_y), 220, 255, -1)
+            thresh = cv2.bitwise_and(thresh, thresh, mask=mask)
+
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            detections = []
+            total_score = 0
+            score_counts = {i: 0 for i in range(11)}
+
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area < min_area or area > 6000:
+                    continue
+
+                M = cv2.moments(cnt)
+                if M["m00"] == 0: continue
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+
+                distance = np.hypot(cx - center_x, cy - center_y)
+
+                # Dostosowane progi pod Twoje zdjęcia Rabarbar
+                if distance < 58:      score = 10
+                elif distance < 95:    score = 9
+                elif distance < 138:   score = 8
+                elif distance < 185:   score = 7
+                elif distance < 232:   score = 6
+                elif distance < 278:   score = 5
+                elif distance < 325:   score = 4
+                elif distance < 372:   score = 3
+                elif distance < 418:   score = 2
+                elif distance < 470:   score = 1
+                else:                  score = 0
+
+                detections.append((cx, cy, score))
+                total_score += score
+                score_counts[score] += 1
+
+            self.detections = detections
+            self.last_total_score = total_score
+            self.last_score_counts = score_counts.copy()
+
+            # Rysowanie trafień
+            pil_img = Image.open(self.current_image_path).convert("RGB")
+            draw = ImageDraw.Draw(pil_img)
+            try:
+                font = ImageFont.truetype("arial.ttf", 26)
+            except:
+                font = ImageFont.load_default()
+
+            for cx, cy, score in detections:
+                draw.ellipse([cx-20, cy-20, cx+20, cy+20], outline="#ff0000", width=6)
+                draw.text((cx + 28, cy - 22), str(score), fill="#ffff00", font=font)
+
+            display_img = pil_img.copy()
+            display_img.thumbnail((780, 780), Image.LANCZOS)
+            self.annotated_photo = ctk.CTkImage(light_image=display_img, dark_image=display_img, size=display_img.size)
+            self.image_label.configure(image=self.annotated_photo)
+
+            # Wynik
+            result_text = f"Znaleziono trafień: {len(detections)}\n\n"
+            result_text += f"CAŁKOWITY WYNIK: {total_score} PUNKTÓW\n\nRozbicie na pola:\n"
+            for s in range(10, -1, -1):
+                if score_counts.get(s, 0) > 0:
+                    result_text += f"Pole {s} → {score_counts[s]} trafień\n"
+
+            result_text += f"\nCzułość: {min_area} px"
+
+            self.result_textbox.delete("0.0", "end")
+            self.result_textbox.insert("0.0", result_text)
+            self.result_textbox.configure(text_color="#4ade80")
+
+        except Exception as e:
+            self.result_textbox.delete("0.0", "end")
+            self.result_textbox.insert("0.0", f"Błąd analizy:\n{str(e)}")
+            self.result_textbox.configure(text_color="red")
+
+    def save_to_excel(self):
+        if not self.detections:
+            messagebox.showwarning("Brak danych", "Najpierw przeanalizuj tarczę!")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Plik Excel", "*.xlsx")],
+            initialfile=f"tarcza_wynik_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        )
+        if not file_path: return
+
+        try:
+            data = []
+            for i, (cx, cy, score) in enumerate(self.detections, 1):
+                data.append({"Trafienie nr": i, "X": cx, "Y": cy, "Punkty": score})
+
+            df_details = pd.DataFrame(data)
+
+            summary = {
+                "Parametr": ["Data analizy", "Liczba trafień", "Wynik całkowity", "Czułość detekcji"],
+                "Wartość": [datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            len(self.detections),
+                            self.last_total_score,
+                            int(self.sensitivity_slider.get())]
+            }
+            df_summary = pd.DataFrame(summary)
+
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                df_summary.to_excel(writer, sheet_name="Podsumowanie", index=False)
+                df_details.to_excel(writer, sheet_name="Szczegóły trafień", index=False)
+
+            messagebox.showinfo("Sukces", f"Zapisano do Excela:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("Błąd", f"Nie udało się zapisać Excela:\n{e}")
+
+    def clear_all(self):
+        self.image_label.configure(image=None, text="Wczytaj zdjęcie tarczy")
+        self.result_textbox.delete("0.0", "end")
+        self.result_textbox.insert("0.0", "Wynik analizy pojawi się tutaj...\n")
+        self.current_image_path = None
+        self.annotated_photo = None
+        self.detections = []
+        self.last_total_score = 0
+
+
+if __name__ == "__main__":
+    app = ShooterAnalyzerApp()
+    app.mainloop()
