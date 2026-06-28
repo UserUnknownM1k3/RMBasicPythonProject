@@ -1,0 +1,54 @@
+import customtkinter as ctk
+from tkinter import filedialog
+from PIL import Image, ImageTk
+
+ctk.set_appearance_mode("dark")      # "light", "dark" lub "system"
+ctk.set_default_color_theme("blue")  # "blue", "green", "dark-blue"
+
+class ModernImageUploader(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Wgrywanie zdjęć - nowoczesna aplikacja")
+        self.geometry("900x700")
+
+        self.title_label = ctk.CTkLabel(self, text="Wybierz zdjęcie", font=ctk.CTkFont(size=20, weight="bold"))
+        self.title_label.pack(pady=20)
+
+        self.image_label = ctk.CTkLabel(self, text="Podgląd zdjęcia pojawi się tutaj", 
+                                        width=500, height=500, fg_color="#2b2b2b")
+        self.image_label.pack(pady=10, padx=20)
+
+        self.upload_button = ctk.CTkButton(self, text="Przeglądaj i wczytaj zdjęcie", 
+                                           command=self.upload_image, height=40, font=ctk.CTkFont(size=14))
+        self.upload_button.pack(pady=20)
+
+        self.path_label = ctk.CTkLabel(self, text="Nie wybrano pliku", text_color="gray")
+        self.path_label.pack(pady=5)
+
+        self.current_photo = None   # przechowuje referencję do obrazu
+
+    def upload_image(self):
+        file_path = filedialog.askopenfilename(
+            title="Wybierz zdjęcie",
+            filetypes=[("Obrazy", "*.png *.jpg *.jpeg *.bmp *.gif *.webp")]
+        )
+        
+        if not file_path:
+            return
+
+        try:
+            img = Image.open(file_path)
+            img.thumbnail((520, 520), Image.LANCZOS)
+            
+            self.current_photo = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
+            
+            self.image_label.configure(image=self.current_photo, text="")
+            self.path_label.configure(text=f"Plik: {file_path}", text_color="lightgreen")
+            
+        except Exception as e:
+            self.path_label.configure(text=f"Błąd wczytywania: {e}", text_color="red")
+
+
+if __name__ == "__main__":
+    app = ModernImageUploader()
+    app.mainloop()
